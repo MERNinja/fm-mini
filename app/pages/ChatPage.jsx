@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import * as webllm from '@mlc-ai/web-llm';
 import { useTheme } from '../context/ThemeContext';
+import DistributedModelManager from '../utils/DistributedModelManager';
+import NodeList from '../components/NodeList';
 
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
@@ -21,15 +23,21 @@ const ChatPage = () => {
     text: '',
   });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isDistributedGenerating, setIsDistributedGenerating] = useState(false);
   const [autoLoad, setAutoLoad] = useState(() => {
     // Check if auto-load is enabled
     return localStorage.getItem('autoLoadModel') === 'true';
   });
-  const [activeTab, setActiveTab] = useState('chat'); // 'chat' or 'nodelog'
+  const [activeTab, setActiveTab] = useState('chat'); // 'chat', 'nodelog', or 'network'
   const [nodeLogs, setNodeLogs] = useState([]);
   const messagesEndRef = useRef(null);
   const nodeLogsEndRef = useRef(null);
   const { theme } = useTheme();
+  const [distributedManager, setDistributedManager] = useState(null);
+  const [tensorParallelismEnabled, setTensorParallelismEnabled] =
+    useState(false);
+  const [connectedPeers, setConnectedPeers] = useState(0);
+  const [tensorNodes, setTensorNodes] = useState([]);
 
   // Connect to socket.io server
   useEffect(() => {
@@ -144,14 +152,27 @@ const ChatPage = () => {
     if (engine && socket && nodeId && modelStatus === 'ready') {
       // Register this client as a node with the WebLLM model
       socket.emit('register_node', {
-        id: nodeId,
+        id: socket.id, // Use socket.id instead of nodeId
         model: selectedModel,
         ip: window.location.host,
         status: 'online',
+        role: tensorParallelismEnabled ? 'coordinator' : 'worker',
+        capabilities: {
+          tensorParallelism: tensorParallelismEnabled,
+          gpuMemory: 1024, // Mock value, could be detected from WebGPU in a real implementation
+          cpuCores: navigator.hardwareConcurrency || 4,
+        },
       });
       console.log('Registered node with socket ID:', socket.id);
     }
-  }, [engine, socket, nodeId, selectedModel, modelStatus]);
+  }, [
+    engine,
+    socket,
+    nodeId,
+    selectedModel,
+    modelStatus,
+    tensorParallelismEnabled,
+  ]);
 
   // Check WebGPU support
   const checkWebGPUSupport = async () => {
@@ -241,6 +262,185 @@ const ChatPage = () => {
     nodeLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [nodeLogs]);
 
+  // Update tensor parallelism capability when it changes
+  useEffect(() => {
+    if (socket && nodeId && modelStatus === 'ready') {
+      // Update this node's capabilities
+      socket.emit('update_node_capabilities', {
+        id: socket.id, // Use socket.id instead of nodeId
+        capabilities: {
+          tensorParallelism: tensorParallelismEnabled,
+          gpuMemory: 1024,
+          cpuCores: navigator.hardwareConcurrency || 4,
+        },
+      });
+
+      // Log the change
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId,
+          socketId: socket?.id || 'unknown',
+          action: tensorParallelismEnabled
+            ? 'tensor-parallelism-enabled'
+            : 'tensor-parallelism-disabled',
+          prompt: `Tensor parallelism ${
+            tensorParallelismEnabled ? 'enabled' : 'disabled'
+          }`,
+        },
+      ]);
+
+      // Request tensor-capable nodes if enabled
+      if (tensorParallelismEnabled) {
+        socket.emit('get_tensor_nodes', selectedModel);
+
+        // Add listener for tensor node list if not already added
+        if (!socket._listeners || !socket._listeners['tensor_node_list']) {
+          socket.on('tensor_node_list', (nodes) => {
+            console.log('Tensor-capable nodes:', nodes);
+
+            // Update the tensor nodes state
+            setTensorNodes(nodes);
+
+            setNodeLogs((prev) => [
+              ...prev,
+              {
+                timestamp: new Date().toLocaleTimeString(),
+                nodeId,
+                socketId: socket?.id || 'unknown',
+                action: 'tensor-nodes-discovered',
+                prompt: `Found ${nodes.length} tensor-capable nodes: ${nodes
+                  .map((n) => n.id)
+                  .join(', ')}`,
+              },
+            ]);
+          });
+          socket._listeners = socket._listeners || {};
+          socket._listeners['tensor_node_list'] = true;
+        }
+      }
+    }
+  }, [tensorParallelismEnabled, socket, nodeId, modelStatus, selectedModel]);
+
+  // Initialize distributed model manager when socket and nodeId are ready
+  useEffect(() => {
+    if (socket && nodeId && !distributedManager) {
+      // Use socket.id instead of nodeId for distributed manager
+      const manager = new DistributedModelManager(
+        socket,
+        socket.id, // Use socket.id instead of nodeId
+        selectedModel || ''
+      );
+
+      // Set up event handler
+      manager.setEventCallback((event, data) => {
+        console.log(`DistributedModelManager event: ${event}`, data);
+
+        // Log events to node logs
+        setNodeLogs((prev) => [
+          ...prev,
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            nodeId,
+            socketId: socket?.id || 'unknown',
+            action: `tensor-${event}`,
+            prompt: `${event}: ${JSON.stringify(data)}`,
+          },
+        ]);
+
+        // Update connected peers count
+        if (event === 'node-connected' || event === 'nodes-updated') {
+          setConnectedPeers(data.totalConnected || 0);
+        }
+      });
+
+      setDistributedManager(manager);
+    }
+  }, [socket, nodeId, selectedModel]);
+
+  // Update model ID in distributed manager when model changes
+  useEffect(() => {
+    if (distributedManager && selectedModel) {
+      distributedManager.modelId = selectedModel;
+    }
+  }, [selectedModel, distributedManager]);
+
+  // Initialize the distributed manager when engine is loaded
+  useEffect(() => {
+    if (
+      distributedManager &&
+      engine &&
+      modelStatus === 'ready' &&
+      tensorParallelismEnabled
+    ) {
+      // Initialize as coordinator since this node has the model loaded
+      const initDistributed = async () => {
+        try {
+          // Extract model config and weights from engine
+          // This is a simplification - real implementation would extract actual model weights
+          const modelConfig = {
+            model: selectedModel,
+            hidden_size: 768,
+            num_heads: 12,
+            num_layers: 12,
+          };
+
+          // Mock weights for demonstration
+          const modelWeights = {
+            mock: true,
+          };
+
+          await distributedManager.initAsCoordinator(modelConfig, modelWeights);
+
+          // Connect to available nodes
+          const connectedCount = await distributedManager.connectToNodes();
+
+          setNodeLogs((prev) => [
+            ...prev,
+            {
+              timestamp: new Date().toLocaleTimeString(),
+              nodeId,
+              socketId: socket?.id || 'unknown',
+              action: 'tensor-parallelism-initialized',
+              prompt: `Connected to ${connectedCount} worker nodes for tensor parallelism`,
+            },
+          ]);
+        } catch (error) {
+          console.error('Error initializing distributed model:', error);
+
+          setNodeLogs((prev) => [
+            ...prev,
+            {
+              timestamp: new Date().toLocaleTimeString(),
+              nodeId,
+              socketId: socket?.id || 'unknown',
+              action: 'error',
+              prompt: `Error initializing tensor parallelism: ${error.message}`,
+            },
+          ]);
+        }
+      };
+
+      initDistributed();
+    }
+  }, [
+    distributedManager,
+    engine,
+    modelStatus,
+    tensorParallelismEnabled,
+    selectedModel,
+  ]);
+
+  // Clean up distributed manager on unmount or model changes
+  useEffect(() => {
+    return () => {
+      if (distributedManager) {
+        distributedManager.cleanup();
+      }
+    };
+  }, [distributedManager]);
+
   // Handle send message
   const handleSendMessage = async () => {
     if (!input.trim() || isGenerating) return;
@@ -299,34 +499,120 @@ const ChatPage = () => {
           },
         ]);
 
-        // Use streaming for more responsive UI
-        const chunks = await engine.chat.completions.create({
-          messages: messageHistory,
-          temperature: 0.7,
-          max_tokens: 800,
-          stream: true,
-        });
-
         let fullResponse = '';
+        let timingInfo = {};
 
-        // Process each chunk as it arrives
-        for await (const chunk of chunks) {
-          if (chunk.choices && chunk.choices[0]?.delta?.content) {
-            const contentDelta = chunk.choices[0].delta.content;
-            fullResponse += contentDelta;
+        // Check if we should use distributed inference
+        if (
+          tensorParallelismEnabled &&
+          distributedManager &&
+          connectedPeers > 0
+        ) {
+          // Use distributed tensor parallelism
+          setIsDistributedGenerating(true);
 
-            // Update the message with the accumulated text
-            setMessages((prev) => {
-              const updated = [...prev];
-              updated[newMessageIndex] = {
-                text: fullResponse,
-                sender: 'bot',
-                nodeId: nodeId,
-                socketId: socket?.id,
-              };
-              return updated;
-            });
+          setNodeLogs((prev) => [
+            ...prev,
+            {
+              timestamp: new Date().toLocaleTimeString(),
+              nodeId,
+              socketId: socket?.id || 'unknown',
+              action: 'tensor-inference-start',
+              prompt: `Starting distributed inference with ${connectedPeers} connected peers`,
+            },
+          ]);
+
+          const result = await distributedManager.runDistributedInference({
+            messages: messageHistory,
+            temperature: 0.7,
+            max_tokens: 800,
+          });
+
+          setIsDistributedGenerating(false);
+          fullResponse = result.text;
+          timingInfo = result.timing;
+
+          // Log detailed timing information
+          setNodeLogs((prev) => [
+            ...prev,
+            {
+              timestamp: new Date().toLocaleTimeString(),
+              nodeId,
+              socketId: socket?.id || 'unknown',
+              action: 'tensor-inference-details',
+              prompt: `Timing - Total: ${timingInfo.total}ms | Network: ${
+                timingInfo.network || 0
+              }ms | Compute: ${timingInfo.computation || 0}ms | Workers: ${
+                result.workersUsed || connectedPeers
+              }`,
+            },
+          ]);
+
+          // Update the message with the result
+          setMessages((prev) => {
+            const updated = [...prev];
+            updated[newMessageIndex] = {
+              text: fullResponse,
+              sender: 'bot',
+              nodeId: nodeId,
+              socketId: socket?.id,
+              distributed: true,
+              timing: timingInfo,
+            };
+            return updated;
+          });
+
+          // Log that distributed processing completed
+          setNodeLogs((prev) => [
+            ...prev,
+            {
+              timestamp: new Date().toLocaleTimeString(),
+              nodeId,
+              socketId: socket?.id || 'unknown',
+              action: 'distributed-inference-completed',
+              prompt: `Completed in ${timingInfo.total}ms across ${
+                connectedPeers + 1
+              } nodes`,
+            },
+          ]);
+        } else {
+          // Use standard WebLLM inference
+          const startTime = performance.now();
+
+          // Use streaming for more responsive UI
+          const chunks = await engine.chat.completions.create({
+            messages: messageHistory,
+            temperature: 0.7,
+            max_tokens: 800,
+            stream: true,
+          });
+
+          // Process each chunk as it arrives
+          for await (const chunk of chunks) {
+            if (chunk.choices && chunk.choices[0]?.delta?.content) {
+              const contentDelta = chunk.choices[0].delta.content;
+              fullResponse += contentDelta;
+
+              // Update the message with the accumulated text
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[newMessageIndex] = {
+                  text: fullResponse,
+                  sender: 'bot',
+                  nodeId: nodeId,
+                  socketId: socket?.id,
+                  distributed: false,
+                };
+                return updated;
+              });
+            }
           }
+
+          const endTime = performance.now();
+          timingInfo = {
+            total: endTime - startTime,
+            computation: endTime - startTime,
+          };
         }
 
         // Log that this node completed processing
@@ -519,21 +805,21 @@ const ChatPage = () => {
               >
                 Load Model & Host Node
               </button>
-              {/* <div className="flex items-center ml-2">
+              <div className="flex items-center ml-2">
                 <input
                   type="checkbox"
-                  id="autoload"
-                  checked={autoLoad}
-                  onChange={toggleAutoLoad}
+                  id="tensor-parallelism"
+                  checked={tensorParallelismEnabled}
+                  onChange={() => setTensorParallelismEnabled((prev) => !prev)}
                   className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                 />
                 <label
-                  htmlFor="autoload"
+                  htmlFor="tensor-parallelism"
                   className="ml-2 text-xs text-white cursor-pointer"
                 >
-                  Auto-load
+                  Tensor Parallelism
                 </label>
-              </div> */}
+              </div>
             </div>
           )}
           {modelStatus === 'loading' && (
@@ -558,6 +844,29 @@ const ChatPage = () => {
                 <span className="bg-success-light dark:bg-success-dark px-3 py-1 rounded text-xs font-medium">
                   Model Ready: {selectedModel}
                 </span>
+                {tensorParallelismEnabled && (
+                  <span
+                    className={`px-3 py-1 rounded text-xs font-medium flex items-center ${
+                      connectedPeers > 0
+                        ? 'bg-info-light dark:bg-info-dark'
+                        : 'bg-yellow-600 dark:bg-yellow-700'
+                    }`}
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full mr-1 ${
+                        connectedPeers > 0
+                          ? 'bg-green-500 animate-pulse'
+                          : 'bg-yellow-300'
+                      }`}
+                    ></span>
+                    Tensor Parallelism: {connectedPeers} peers
+                    {isDistributedGenerating && (
+                      <span className="ml-1 bg-blue-700 text-white text-[10px] px-1 py-0.5 rounded-sm animate-pulse">
+                        ACTIVE
+                      </span>
+                    )}
+                  </span>
+                )}
                 <button
                   onClick={() => {
                     unloadModel();
@@ -579,6 +888,108 @@ const ChatPage = () => {
               <span className="text-xs text-white/80">
                 Socket ID: {socket?.id || 'N/A'}
               </span>
+              {tensorParallelismEnabled && (
+                <div className="flex items-center mt-1 gap-2">
+                  <button
+                    onClick={() => {
+                      // Force refresh tensor nodes
+                      socket.emit('get_tensor_nodes', selectedModel);
+                      setNodeLogs((prev) => [
+                        ...prev,
+                        {
+                          timestamp: new Date().toLocaleTimeString(),
+                          nodeId,
+                          socketId: socket?.id || 'unknown',
+                          action: 'manual-refresh',
+                          prompt: 'Manually refreshing tensor node list',
+                        },
+                      ]);
+                    }}
+                    className="bg-green-600 px-2 py-1 rounded text-xs text-white"
+                  >
+                    Refresh Tensor Nodes
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (distributedManager) {
+                        // Get all socket IDs from tensorNodes
+                        const socketIds = tensorNodes
+                          .map((node) => node.id)
+                          .filter((id) => id !== socket.id);
+
+                        if (socketIds.length === 0) {
+                          setNodeLogs((prev) => [
+                            ...prev,
+                            {
+                              timestamp: new Date().toLocaleTimeString(),
+                              nodeId,
+                              socketId: socket?.id || 'unknown',
+                              action: 'manual-connect-error',
+                              prompt: `No tensor-capable nodes found to connect to`,
+                            },
+                          ]);
+                          return;
+                        }
+
+                        // Log the IDs we're trying to connect to
+                        setNodeLogs((prev) => [
+                          ...prev,
+                          {
+                            timestamp: new Date().toLocaleTimeString(),
+                            nodeId,
+                            socketId: socket?.id || 'unknown',
+                            action: 'manual-connect-attempt',
+                            prompt: `Attempting to connect to: ${socketIds.join(
+                              ', '
+                            )}`,
+                          },
+                        ]);
+
+                        // Force connect to each socket ID
+                        const connectPromises = socketIds.map((id) =>
+                          distributedManager.rtcManager
+                            .initConnection(id)
+                            .then(() => ({ id, success: true }))
+                            .catch((err) => ({
+                              id,
+                              success: false,
+                              error: err.message,
+                            }))
+                        );
+
+                        Promise.all(connectPromises).then((results) => {
+                          const successful = results.filter(
+                            (r) => r.success
+                          ).length;
+
+                          setNodeLogs((prev) => [
+                            ...prev,
+                            {
+                              timestamp: new Date().toLocaleTimeString(),
+                              nodeId,
+                              socketId: socket?.id || 'unknown',
+                              action: 'manual-connect-complete',
+                              prompt: `Connected to ${successful}/${
+                                socketIds.length
+                              } nodes: ${results
+                                .map(
+                                  (r) =>
+                                    `${r.id.substring(0, 6)}(${
+                                      r.success ? 'OK' : 'FAIL'
+                                    })`
+                                )
+                                .join(', ')}`,
+                            },
+                          ]);
+                        });
+                      }
+                    }}
+                    className="bg-purple-600 px-2 py-1 rounded text-xs text-white"
+                  >
+                    Force Connect
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {modelStatus === 'error' && (
@@ -592,24 +1003,34 @@ const ChatPage = () => {
       {/* Tabs */}
       <div className="flex border-b border-gray-200 dark:border-gray-700">
         <button
-          className={`px-4 py-2 text-sm font-medium ${
+          className={`px-6 py-3 text-sm font-medium ${
             activeTab === 'chat'
               ? 'text-primary-light dark:text-blue-400 border-b-2 border-primary-light dark:border-blue-400'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border-b-2 dark:border-gray-500'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border-b-2 border-transparent'
           }`}
           onClick={() => setActiveTab('chat')}
         >
           Chat
         </button>
         <button
-          className={`px-4 py-2 text-sm font-medium ${
+          className={`px-6 py-3 text-sm font-medium ${
             activeTab === 'nodelog'
               ? 'text-primary-light dark:text-blue-400 border-b-2 border-primary-light dark:border-blue-400'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border-b-2 dark:border-gray-500'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border-b-2 border-transparent'
           }`}
           onClick={() => setActiveTab('nodelog')}
         >
           Node Log
+        </button>
+        <button
+          className={`px-6 py-3 text-sm font-medium ${
+            activeTab === 'network'
+              ? 'text-primary-light dark:text-blue-400 border-b-2 border-primary-light dark:border-blue-400'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border-b-2 border-transparent'
+          }`}
+          onClick={() => setActiveTab('network')}
+        >
+          Network Status
         </button>
       </div>
 
@@ -644,6 +1065,8 @@ const ChatPage = () => {
                     ? 'bg-primary-light dark:bg-primary-dark text-white self-end ml-auto'
                     : message.nodeId === 'system'
                     ? 'bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 self-start border-l-4 border-yellow-500'
+                    : message.distributed
+                    ? 'bg-blue-100 dark:bg-blue-900 text-gray-800 dark:text-gray-200 self-start border-l-4 border-blue-500'
                     : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 self-start'
                 } ${message.text ? '' : 'min-h-[40px] flex items-center'}`}
               >
@@ -657,9 +1080,21 @@ const ChatPage = () => {
                   )}
                   {message.socketId && message.sender === 'bot' && (
                     <div className="text-xs mt-1 text-gray-500 dark:text-gray-400">
-                      {message.nodeId === 'system'
-                        ? 'System message'
-                        : `From node: ${message.socketId.substring(0, 6)}...`}
+                      {message.nodeId === 'system' ? (
+                        'System message'
+                      ) : message.distributed ? (
+                        <span className="flex items-center">
+                          <span className="bg-blue-500 text-white px-2 py-0.5 rounded-full mr-1 animate-pulse">
+                            Distributed
+                          </span>
+                          <span>
+                            Across {connectedPeers + 1} nodes (
+                            {message.timing?.total || '?'}ms)
+                          </span>
+                        </span>
+                      ) : (
+                        `From node: ${message.socketId.substring(0, 6)}...`
+                      )}
                     </div>
                   )}
                 </div>
@@ -720,6 +1155,124 @@ const ChatPage = () => {
                 clear
               </button>
             </div>
+
+            {/* Tensor parallelism debug info */}
+            {tensorParallelismEnabled && (
+              <div className="mt-3 border-t border-gray-800 pt-2">
+                <div className="text-yellow-400 text-xs uppercase font-bold mb-1">
+                  Tensor Parallelism Debug:
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                  <div>
+                    <span className="text-gray-400">Status:</span>{' '}
+                    <span className="text-green-500">ENABLED</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Connected Peers:</span>{' '}
+                    <span
+                      className={`text-${
+                        connectedPeers > 0 ? 'green' : 'red'
+                      }-500`}
+                    >
+                      {connectedPeers}{' '}
+                      {isDistributedGenerating && (
+                        <span className="text-blue-400 animate-pulse ml-1">
+                          [ACTIVE]
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Node ID:</span>{' '}
+                    <span className="text-blue-400">{nodeId}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Socket ID:</span>{' '}
+                    <span className="text-blue-400">
+                      {socket?.id.substring(0, 8)}...
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Node Role:</span>{' '}
+                    <span className="text-pink-500">
+                      {distributedManager?.isCoordinator
+                        ? 'Coordinator'
+                        : 'Worker'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Model:</span>{' '}
+                    <span className="text-cyan-500">{selectedModel}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Network Status:</span>{' '}
+                    <span
+                      className={`${
+                        connectedPeers > 0
+                          ? 'text-green-500'
+                          : 'text-yellow-500'
+                      }`}
+                    >
+                      {connectedPeers > 0 ? 'Connected' : 'Waiting for peers'}
+                    </span>
+                  </div>
+                  <div>
+                    <button
+                      onClick={() => {
+                        if (socket) {
+                          socket.emit('get_nodes');
+                          socket.emit('get_tensor_nodes', selectedModel);
+                          setNodeLogs((prev) => [
+                            ...prev,
+                            {
+                              timestamp: new Date().toLocaleTimeString(),
+                              nodeId,
+                              socketId: socket?.id || 'unknown',
+                              action: 'debug-refresh',
+                              prompt:
+                                'Manually refreshing all node information',
+                            },
+                          ]);
+                        }
+                      }}
+                      className="bg-gray-800 hover:bg-gray-700 text-green-400 px-2 py-0.5 rounded text-[10px] border border-gray-600"
+                    >
+                      Refresh Nodes
+                    </button>
+                  </div>
+                </div>
+
+                {/* Known tensor nodes */}
+                <div className="mt-2 text-xs">
+                  <div className="text-gray-400">
+                    Known tensor nodes:{' '}
+                    <span className="text-yellow-500">
+                      {tensorNodes.length}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {tensorNodes.map((node) => (
+                      <span
+                        key={node.id}
+                        className="bg-gray-900 px-1.5 py-0.5 rounded border border-gray-700 text-[10px]"
+                      >
+                        <span className="text-blue-400">
+                          {node.id.substring(0, 6)}
+                        </span>
+                        {node.id === nodeId && (
+                          <span className="text-green-500 ml-1">(self)</span>
+                        )}
+                      </span>
+                    ))}
+                    {tensorNodes.length === 0 && (
+                      <span className="text-gray-500 text-[10px]">
+                        No tensor-capable nodes found
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Terminal content */}
@@ -771,6 +1324,9 @@ const ChatPage = () => {
           </div>
         </div>
       )}
+
+      {/* Network Status Tab Content */}
+      {activeTab === 'network' && <NodeList socket={socket} />}
 
       <div className="text-right p-2 px-4 text-xs text-gray-300">
         powered by{' '}

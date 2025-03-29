@@ -12,7 +12,7 @@ const App = () => {
     <ThemeProvider>
       <BrowserRouter>
         <div className="flex flex-col min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
-          <header className="bg-secondary-light dark:bg-secondary-dark text-white py-4">
+          {/* <header className="bg-secondary-light dark:bg-secondary-dark text-white py-4">
             <div className="container mx-auto px-4 flex justify-between items-center">
               <nav>
                 <ul className="flex space-x-6">
@@ -36,8 +36,8 @@ const App = () => {
               </nav>
               <ThemeToggle />
             </div>
-          </header>
-          <main className="flex-1 container mx-auto px-4 py-8">
+          </header> */}
+          <main className="flex-1 container mx-auto px-4 py-8 mt-8">
             <Routes>
               <Route path="/" element={<ChatPage />} />
               <Route path="/nodes" element={<NodeListPage />} />
