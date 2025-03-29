@@ -10,7 +10,7 @@
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:server\"",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.js"
+    "start": "concurrently \"npm run dev:frontend\" \"npm run dev:server\""
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.78",
