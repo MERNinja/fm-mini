@@ -38,7 +38,7 @@ const ChatPage = () => {
     setNodeId(id);
 
     newSocket.on('connect', () => {
-      console.log('Connected to server');
+      console.log('Connected to server with socket ID:', newSocket.id);
     });
 
     newSocket.on('message', (message) => {
@@ -110,6 +110,7 @@ const ChatPage = () => {
         ip: window.location.host,
         status: 'online',
       });
+      console.log('Registered node with socket ID:', socket.id);
     }
   }, [engine, socket, nodeId, selectedModel, modelStatus]);
 
@@ -424,7 +425,9 @@ const ChatPage = () => {
                   Change Model
                 </button>
               </div>
-              <span className="text-xs text-white/80">Node ID: {nodeId}</span>
+              <span className="text-xs text-white/80">
+                Socket ID: {socket?.id || 'N/A'}
+              </span>
             </div>
           )}
           {modelStatus === 'error' && (

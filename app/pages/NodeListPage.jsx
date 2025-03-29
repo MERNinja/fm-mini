@@ -8,6 +8,16 @@ const NodeListPage = () => {
   const [loading, setLoading] = useState(true);
   const { theme } = useTheme();
 
+  // Sort nodes by connectedAt in descending order (newest first)
+  const sortNodesByDate = (nodeList) => {
+    return [...nodeList].sort((a, b) => {
+      // Handle cases where connectedAt might be missing
+      if (!a.connectedAt) return 1;
+      if (!b.connectedAt) return -1;
+      return new Date(b.connectedAt) - new Date(a.connectedAt);
+    });
+  };
+
   useEffect(() => {
     // Connect to socket.io server
     const newSocket = io(); // Use Vite's proxy
@@ -21,27 +31,36 @@ const NodeListPage = () => {
 
     // Listen for node list updates
     newSocket.on('node_list', (nodeList) => {
-      setNodes(nodeList);
+      // Sort nodes by connectedAt in descending order (newest first)
+      setNodes(sortNodesByDate(nodeList));
       setLoading(false);
     });
 
     // Listen for new node registrations
     newSocket.on('node_registered', (node) => {
-      setNodes((prev) => [...prev, node]);
+      setNodes((prev) => {
+        // Add new node and re-sort
+        const updated = [...prev, node];
+        return sortNodesByDate(updated);
+      });
     });
 
     // Listen for node disconnections
     newSocket.on('node_disconnected', (nodeId) => {
-      setNodes((prev) => prev.filter((node) => node.id !== nodeId));
+      setNodes((prev) =>
+        sortNodesByDate(prev.filter((node) => node.id !== nodeId))
+      );
     });
 
     // Listen for node status updates
     newSocket.on('node_status_update', (update) => {
-      setNodes((prev) =>
-        prev.map((node) =>
+      setNodes((prev) => {
+        const updated = prev.map((node) =>
           node.id === update.id ? { ...node, status: update.status } : node
-        )
-      );
+        );
+        // Maintain the sort order
+        return sortNodesByDate(updated);
+      });
     });
 
     return () => {
@@ -66,7 +85,9 @@ const NodeListPage = () => {
   // Format timestamp
   const formatTime = (timestamp) => {
     if (!timestamp) return 'N/A';
-    return new Date(timestamp).toLocaleTimeString();
+    const date = new Date(timestamp);
+    // Show date and time for better clarity
+    return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
   };
 
   return (
@@ -125,7 +146,7 @@ const NodeListPage = () => {
             <thead className="bg-gray-50 dark:bg-gray-900">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  ID
+                  Socket ID
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   IP Address
@@ -136,8 +157,22 @@ const NodeListPage = () => {
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   Status
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center">
                   Connected Since
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-4 w-4 ml-1 text-primary-light dark:text-primary-dark"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 15l7-7 7 7"
+                    />
+                  </svg>
                 </th>
               </tr>
             </thead>
@@ -148,7 +183,7 @@ const NodeListPage = () => {
                   className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
                 >
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                    {node.id}
+                    {node.socketId || 'N/A'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
                     {node.ip}
