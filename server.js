@@ -66,6 +66,13 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('message', message);
     });
 
+    // Handle node activity logs
+    socket.on('node_activity', (activity) => {
+        console.log('Node activity:', activity);
+        // Broadcast activity to all clients
+        socket.broadcast.emit('node_activity', activity);
+    });
+
     // Handle node unregistration
     socket.on('unregister_node', (data) => {
         console.log('Node unregistered:', data.id);

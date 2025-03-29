@@ -25,7 +25,10 @@ const ChatPage = () => {
     // Check if auto-load is enabled
     return localStorage.getItem('autoLoadModel') === 'true';
   });
+  const [activeTab, setActiveTab] = useState('chat'); // 'chat' or 'nodelog'
+  const [nodeLogs, setNodeLogs] = useState([]);
   const messagesEndRef = useRef(null);
+  const nodeLogsEndRef = useRef(null);
   const { theme } = useTheme();
 
   // Connect to socket.io server
@@ -47,6 +50,18 @@ const ChatPage = () => {
         {
           text: message.text,
           sender: 'bot',
+        },
+      ]);
+    });
+
+    newSocket.on('node_activity', (activity) => {
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId: activity.nodeId,
+          action: activity.action,
+          prompt: activity.prompt,
         },
       ]);
     });
@@ -193,6 +208,11 @@ const ChatPage = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Auto-scroll to bottom on new logs
+  useEffect(() => {
+    nodeLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [nodeLogs]);
+
   // Handle send message
   const handleSendMessage = async () => {
     if (!input.trim() || isGenerating) return;
@@ -201,6 +221,17 @@ const ChatPage = () => {
     const userMessage = { text: input, sender: 'user' };
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
+
+    // Log the prompt in node logs
+    setNodeLogs((prev) => [
+      ...prev,
+      {
+        timestamp: new Date().toLocaleTimeString(),
+        nodeId,
+        action: 'prompt_sent',
+        prompt: userMessage.text,
+      },
+    ]);
 
     // If engine is ready, generate a response
     if (engine && modelStatus === 'ready') {
@@ -221,6 +252,17 @@ const ChatPage = () => {
         // Add empty bot message that will be updated
         const newMessageIndex = messages.length + 1;
         setMessages((prev) => [...prev, { text: '', sender: 'bot' }]);
+
+        // Log that this node is processing
+        setNodeLogs((prev) => [
+          ...prev,
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            nodeId,
+            action: 'processing_prompt',
+            prompt: userMessage.text,
+          },
+        ]);
 
         // Use streaming for more responsive UI
         const chunks = await engine.chat.completions.create({
@@ -247,11 +289,33 @@ const ChatPage = () => {
           }
         }
 
+        // Log that this node completed processing
+        setNodeLogs((prev) => [
+          ...prev,
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            nodeId,
+            action: 'completed_prompt',
+            prompt:
+              userMessage.text.substring(0, 30) +
+              (userMessage.text.length > 30 ? '...' : ''),
+          },
+        ]);
+
         // Broadcast message to other nodes if connected to socket
         if (socket) {
           socket.emit('message', {
             from: nodeId,
             text: fullResponse,
+          });
+
+          // Broadcast node activity
+          socket.emit('node_activity', {
+            nodeId,
+            action: 'response_generated',
+            prompt:
+              userMessage.text.substring(0, 30) +
+              (userMessage.text.length > 30 ? '...' : ''),
           });
         }
       } catch (error) {
@@ -261,6 +325,17 @@ const ChatPage = () => {
           {
             text: `Error generating response: ${error.message}`,
             sender: 'bot',
+          },
+        ]);
+
+        // Log error in node logs
+        setNodeLogs((prev) => [
+          ...prev,
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            nodeId,
+            action: 'error',
+            prompt: `Error: ${error.message}`,
           },
         ]);
       } finally {
@@ -273,6 +348,17 @@ const ChatPage = () => {
         {
           text: "Please load the WebLLM model first by clicking the 'Load Model' button.",
           sender: 'bot',
+        },
+      ]);
+
+      // Log error in node logs
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId,
+          action: 'error',
+          prompt: 'Model not loaded',
         },
       ]);
     }
@@ -366,9 +452,9 @@ const ChatPage = () => {
               </select>
               <button
                 onClick={loadModel}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 text-white rounded transition-colors"
+                className="text-sm px-3 py-2 bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 text-white rounded transition-colors"
               >
-                Load Model
+                Load Model & Host Node
               </button>
               {/* <div className="flex items-center ml-2">
                 <input
@@ -438,65 +524,167 @@ const ChatPage = () => {
         </div>
       </div>
 
-      <div className="flex-1 p-4 overflow-y-auto bg-gray-50 dark:bg-gray-800 flex flex-col">
-        {messages.length === 0 && modelStatus === 'idle' && (
-          <div className="self-center text-center max-w-md my-auto p-8 bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
-            <h3 className="text-xl font-bold mb-4 text-primary-light dark:text-blue-400">
-              Welcome to WebLLM Chat!
-            </h3>
-            <p className="mb-2 text-gray-600 dark:text-gray-300">
-              Select a model from the dropdown and click "Load Model" to start
-              chatting.
-            </p>
-            <p className="mb-2 text-gray-600 dark:text-gray-300">
-              Once the model is loaded, your browser becomes a node in the
-              network.
-            </p>
-            <p className="text-sm text-error-light dark:text-error-dark p-2 border border-dashed border-error-light dark:border-error-dark rounded mt-4">
-              Note: WebLLM requires a browser with WebGPU support (Chrome 113+
-              or Edge 113+).
-            </p>
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 dark:border-gray-700">
+        <button
+          className={`px-4 py-2 text-sm font-medium ${
+            activeTab === 'chat'
+              ? 'text-primary-light dark:text-blue-400 border-b-2 border-primary-light dark:border-blue-400'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border-b-2 dark:border-gray-500'
+          }`}
+          onClick={() => setActiveTab('chat')}
+        >
+          Chat
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium ${
+            activeTab === 'nodelog'
+              ? 'text-primary-light dark:text-blue-400 border-b-2 border-primary-light dark:border-blue-400'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 border-b-2 dark:border-gray-500'
+          }`}
+          onClick={() => setActiveTab('nodelog')}
+        >
+          Node Log
+        </button>
+      </div>
+
+      {/* Chat Tab Content */}
+      {activeTab === 'chat' && (
+        <>
+          <div className="flex-1 p-4 overflow-y-auto bg-gray-50 dark:bg-gray-800 flex flex-col">
+            {messages.length === 0 && modelStatus === 'idle' && (
+              <div className="self-center text-center max-w-md my-auto p-8 bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+                <h3 className="text-xl font-bold mb-4 text-primary-light dark:text-blue-400">
+                  Welcome to WebLLM Chat!
+                </h3>
+                <p className="mb-2 text-gray-600 dark:text-gray-300">
+                  Select a model from the dropdown and click "Load Model & Host
+                  Node" to start chatting.
+                </p>
+                <p className="mb-2 text-gray-600 dark:text-gray-300">
+                  Once the model is loaded, your browser becomes a node in the
+                  network.
+                </p>
+                <p className="text-sm text-error-light dark:text-error-dark p-2 border border-dashed border-error-light dark:border-error-dark rounded mt-4">
+                  Note: WebLLM requires a browser with WebGPU support (Chrome
+                  113+ or Edge 113+).
+                </p>
+              </div>
+            )}
+            {messages.map((message, index) => (
+              <div
+                key={index}
+                className={`mb-4 p-3 rounded-lg max-w-[80%] ${
+                  message.sender === 'user'
+                    ? 'bg-primary-light dark:bg-primary-dark text-white self-end ml-auto'
+                    : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 self-start'
+                } ${message.text ? '' : 'min-h-[40px] flex items-center'}`}
+              >
+                {message.text || (
+                  <div className="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                )}
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
           </div>
-        )}
-        {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`mb-4 p-3 rounded-lg max-w-[80%] ${
-              message.sender === 'user'
-                ? 'bg-primary-light dark:bg-primary-dark text-white self-end ml-auto'
-                : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 self-start'
-            } ${message.text ? '' : 'min-h-[40px] flex items-center'}`}
-          >
-            {message.text || (
-              <div className="typing-indicator">
-                <span></span>
-                <span></span>
-                <span></span>
+
+          <div className="p-4 border-t border-gray-600 dark:border-gray-700 flex">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+              placeholder="Type your message..."
+              className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-l-md focus:outline-none focus:ring-2 focus:ring-primary-light dark:focus:ring-primary-dark dark:bg-gray-700 dark:text-white disabled:bg-gray-100 dark:disabled:bg-gray-800 disabled:cursor-not-allowed transition-colors"
+              disabled={modelStatus !== 'ready' || isGenerating}
+            />
+            <button
+              onClick={handleSendMessage}
+              className="px-4 py-2 bg-primary-light hover:bg-blue-600 dark:bg-primary-dark dark:hover:bg-blue-700 text-white rounded-r-md focus:outline-none focus:ring-2 focus:ring-primary-light dark:focus:ring-primary-dark disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+              disabled={modelStatus !== 'ready' || isGenerating}
+            >
+              {isGenerating ? 'Generating...' : 'Send'}
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Node Log Tab Content */}
+      {activeTab === 'nodelog' && (
+        <div className="flex-1 overflow-y-auto bg-black dark:bg-black font-mono text-green-400 text-sm">
+          {/* Terminal header */}
+          <div className="sticky top-0 bg-black border-b border-gray-800 px-4 py-2">
+            <div className="text-gray-400 text-xs">
+              <span className="text-green-500">FM-MINI Terminal</span> v1.0.0 -
+              Connected to WebLLM network
+            </div>
+            <div className="flex justify-between items-center mt-1">
+              <div>
+                <span className="text-gray-500">webllm@fm-mini:</span>
+                <span className="text-blue-400">~$ </span>
+                <span className="text-gray-300">
+                  node-activity-monitor --live
+                </span>
+              </div>
+              <button
+                onClick={() => setNodeLogs([])}
+                className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-600"
+              >
+                clear
+              </button>
+            </div>
+          </div>
+
+          {/* Terminal content */}
+          <div className="p-4">
+            {nodeLogs.length === 0 ? (
+              <div className="text-gray-500 my-4">
+                <span className="text-blue-400">$</span> Waiting for node
+                activity...
+                <span className="animate-pulse ml-1">_</span>
+              </div>
+            ) : (
+              <div className="space-y-0.5">
+                {nodeLogs.map((log, index) => (
+                  <div key={index} className="leading-tight">
+                    <span className="text-gray-500">{log.timestamp}</span>{' '}
+                    <span
+                      className={`${
+                        log.action === 'error'
+                          ? 'text-red-500 font-bold'
+                          : log.action === 'completed_prompt'
+                          ? 'text-green-500'
+                          : log.action === 'processing_prompt'
+                          ? 'text-yellow-500'
+                          : log.action === 'prompt_sent'
+                          ? 'text-cyan-500'
+                          : 'text-blue-500'
+                      }`}
+                    >
+                      [{log.action}]
+                    </span>{' '}
+                    <span className="text-purple-500">{log.nodeId}</span>{' '}
+                    <span className="text-gray-400">$</span>{' '}
+                    <span className="text-gray-300 break-words whitespace-pre-wrap">
+                      {log.prompt}
+                    </span>
+                  </div>
+                ))}
+                <div className="text-gray-500 mt-2 border-t border-gray-800 pt-2">
+                  <span className="text-blue-400">$</span>{' '}
+                  <span className="animate-pulse">_</span>
+                </div>
+                <div ref={nodeLogsEndRef} />
               </div>
             )}
           </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
+        </div>
+      )}
 
-      <div className="p-4 border-t border-gray-600 dark:border-gray-700 flex">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-          placeholder="Type your message..."
-          className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-l-md focus:outline-none focus:ring-2 focus:ring-primary-light dark:focus:ring-primary-dark dark:bg-gray-700 dark:text-white disabled:bg-gray-100 dark:disabled:bg-gray-800 disabled:cursor-not-allowed transition-colors"
-          disabled={modelStatus !== 'ready' || isGenerating}
-        />
-        <button
-          onClick={handleSendMessage}
-          className="px-4 py-2 bg-primary-light hover:bg-blue-600 dark:bg-primary-dark dark:hover:bg-blue-700 text-white rounded-r-md focus:outline-none focus:ring-2 focus:ring-primary-light dark:focus:ring-primary-dark disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-          disabled={modelStatus !== 'ready' || isGenerating}
-        >
-          {isGenerating ? 'Generating...' : 'Send'}
-        </button>
-      </div>
       <div className="text-right p-2 px-4 text-xs text-gray-300">
         powered by{' '}
         <a

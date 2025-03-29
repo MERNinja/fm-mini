@@ -113,7 +113,7 @@ npm start
 
 3. Access the application at:
 ```
-http://localhost:5000
+http://localhost:8080
 ```
 
 ## Troubleshooting

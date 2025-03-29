@@ -29,7 +29,7 @@ const App = () => {
                       to="/nodes"
                       className="text-white hover:text-primary-light dark:hover:text-blue-400 font-medium text-lg"
                     >
-                      Nodes
+                      Network Status
                     </Link>
                   </li>
                 </ul>

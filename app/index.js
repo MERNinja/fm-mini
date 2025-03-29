@@ -13,7 +13,7 @@ const App = () => {
                     <nav>
                         <ul>
                             <li><Link to="/">Chat</Link></li>
-                            <li><Link to="/nodes">Nodes</Link></li>
+                            <li><Link to="/nodes">Network Status</Link></li>
                         </ul>
                     </nav>
                 </header>
