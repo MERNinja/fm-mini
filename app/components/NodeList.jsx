@@ -22,6 +22,12 @@ const NodeList = ({ socket, existingNodes = null }) => {
     // Request current node list
     socket.emit('get_nodes');
 
+    // Add socket error handling for the NodeList component
+    const errorHandler = (error) => {
+      console.error('Socket error in NodeList:', error);
+      setLoading(false);
+    };
+
     // Listen for node list updates
     const nodeListHandler = (nodeList) => {
       // Sort nodes by connectedAt in descending order (newest first)
@@ -41,7 +47,9 @@ const NodeList = ({ socket, existingNodes = null }) => {
     // Listen for node disconnections
     const nodeDisconnectedHandler = (nodeId) => {
       setNodes((prev) =>
-        sortNodesByDate(prev.filter((node) => node.id !== nodeId))
+        sortNodesByDate(
+          prev.filter((node) => node.id !== nodeId && node.socketId !== nodeId)
+        )
       );
     };
 
@@ -61,6 +69,7 @@ const NodeList = ({ socket, existingNodes = null }) => {
     socket.on('node_registered', nodeRegisteredHandler);
     socket.on('node_disconnected', nodeDisconnectedHandler);
     socket.on('node_status_update', nodeStatusUpdateHandler);
+    socket.on('error', errorHandler);
 
     return () => {
       // Clean up event handlers
@@ -68,6 +77,7 @@ const NodeList = ({ socket, existingNodes = null }) => {
       socket.off('node_registered', nodeRegisteredHandler);
       socket.off('node_disconnected', nodeDisconnectedHandler);
       socket.off('node_status_update', nodeStatusUpdateHandler);
+      socket.off('error', errorHandler);
     };
   }, [socket]);
 

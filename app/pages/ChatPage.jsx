@@ -41,7 +41,16 @@ const ChatPage = () => {
 
   // Connect to socket.io server
   useEffect(() => {
-    const newSocket = io(); // Use Vite's proxy
+    // Use proper connection options for compatibility with Vercel
+    const newSocket = io({
+      path: '/socket.io/',
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+    });
+
     setSocket(newSocket);
 
     // Generate a random node ID for this client
@@ -50,6 +59,60 @@ const ChatPage = () => {
 
     newSocket.on('connect', () => {
       console.log('Connected to server with socket ID:', newSocket.id);
+      // Add connection logs
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId: id,
+          socketId: newSocket.id || 'unknown',
+          action: 'socket-connected',
+          prompt: `Socket connected with ID: ${newSocket.id}`,
+        },
+      ]);
+    });
+
+    newSocket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId: id,
+          socketId: 'unknown',
+          action: 'error',
+          prompt: `Socket connection error: ${error.message}`,
+        },
+      ]);
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      console.log('Socket disconnected:', reason);
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId: id,
+          socketId: newSocket.id || 'unknown',
+          action: 'socket-disconnected',
+          prompt: `Socket disconnected: ${reason}`,
+        },
+      ]);
+    });
+
+    // Acknowledgment from server upon successful connection
+    newSocket.on('connection_ack', (data) => {
+      console.log('Server acknowledged connection:', data);
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId: id,
+          socketId: data.socketId || 'unknown',
+          action: 'socket-ack',
+          prompt: `Connection acknowledged by server`,
+        },
+      ]);
     });
 
     newSocket.on('message', (message) => {

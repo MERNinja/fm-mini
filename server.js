@@ -13,7 +13,14 @@ const io = new Server(server, {
     cors: {
         origin: '*',
         methods: ['GET', 'POST']
-    }
+    },
+    // Add these settings for Vercel compatibility
+    transports: ['websocket', 'polling'],
+    path: '/socket.io/',
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    upgradeTimeout: 30000,
+    maxHttpBufferSize: 1e8
 });
 
 // Serve static files from the dist directory (Vite build output)
@@ -34,8 +41,16 @@ const nodeRoles = {
 // Store socket ID to node ID mapping
 const socketToNodeMap = {};
 
+// Add a health check endpoint for Vercel
+app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
 io.on('connection', (socket) => {
     console.log('New client connected:', socket.id);
+
+    // Send immediate acknowledgment to client
+    socket.emit('connection_ack', { socketId: socket.id });
 
     // Register a new WebLLM node
     socket.on('register_node', (nodeData) => {
