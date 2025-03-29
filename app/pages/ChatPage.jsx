@@ -11,12 +11,20 @@ const ChatPage = () => {
   const [socket, setSocket] = useState(null);
   const [nodeId, setNodeId] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState('Llama-2-7B');
+  const [selectedModel, setSelectedModel] = useState(() => {
+    // Try to load from localStorage
+    const saved = localStorage.getItem('lastSelectedModel');
+    return saved || '';
+  });
   const [loadingProgress, setLoadingProgress] = useState({
     progress: 0,
     text: '',
   });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [autoLoad, setAutoLoad] = useState(() => {
+    // Check if auto-load is enabled
+    return localStorage.getItem('autoLoadModel') === 'true';
+  });
   const messagesEndRef = useRef(null);
   const { theme } = useTheme();
 
@@ -48,6 +56,11 @@ const ChatPage = () => {
     };
   }, []);
 
+  // Save selected model to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('lastSelectedModel', selectedModel);
+  }, [selectedModel]);
+
   // Fetch available models when component mounts
   useEffect(() => {
     const fetchAvailableModels = async () => {
@@ -61,7 +74,7 @@ const ChatPage = () => {
           console.log('Available models:', models);
 
           // Set default model if available
-          if (models.length > 0) {
+          if (models.length > 0 && !localStorage.getItem('lastSelectedModel')) {
             setSelectedModel(models[0]);
           }
         } else {
@@ -69,19 +82,23 @@ const ChatPage = () => {
         }
       } catch (error) {
         console.error('Error fetching models:', error);
-        // Set some default models if fetch fails
-        setAvailableModels([
-          'Llama-2-7B',
-          'Mistral-7B-v0.1',
-          'RedPajama-INCITE-7B-v0.1',
-          'vicuna-7b-v1.5',
-          'phi-2',
-        ]);
       }
     };
 
     fetchAvailableModels();
   }, []);
+
+  // Auto-load model if enabled
+  useEffect(() => {
+    if (autoLoad && availableModels.length > 0 && modelStatus === 'idle') {
+      // Slight delay to allow UI to render first
+      const timer = setTimeout(() => {
+        loadModel();
+      }, 1000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [availableModels, autoLoad]);
 
   // Register as a WebLLM node when engine is ready
   useEffect(() => {
@@ -265,17 +282,7 @@ const ChatPage = () => {
     setSelectedModel(e.target.value);
     // Reset engine if already loaded
     if (modelStatus === 'ready') {
-      // Safely terminate the engine if it exists
-      if (engine) {
-        try {
-          engine.terminate();
-        } catch (error) {
-          console.error('Error terminating engine:', error);
-        }
-      }
-
-      setModelStatus('idle');
-      setEngine(null);
+      unloadModel();
       setMessages((prev) => [
         ...prev,
         {
@@ -284,6 +291,44 @@ const ChatPage = () => {
         },
       ]);
     }
+  };
+
+  // Toggle auto-load setting
+  const toggleAutoLoad = () => {
+    const newValue = !autoLoad;
+    setAutoLoad(newValue);
+    localStorage.setItem('autoLoadModel', newValue);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        text: `Auto-load model on page refresh is now ${
+          newValue ? 'enabled' : 'disabled'
+        }.`,
+        sender: 'bot',
+      },
+    ]);
+  };
+
+  // Unload the current model
+  const unloadModel = () => {
+    if (engine) {
+      try {
+        engine.terminate();
+      } catch (error) {
+        console.error('Error terminating engine:', error);
+      }
+    }
+
+    // Notify the server that this node is no longer active
+    if (socket && nodeId) {
+      socket.emit('unregister_node', {
+        id: nodeId,
+      });
+    }
+
+    setModelStatus('idle');
+    setEngine(null);
   };
 
   // Cleanup engine on component unmount
@@ -302,7 +347,7 @@ const ChatPage = () => {
   return (
     <div className="flex flex-col h-[calc(100vh-150px)] bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden">
       <div className="bg-primary-light dark:bg-primary-dark text-white p-4 flex justify-between items-center">
-        <h2 className="text-xl font-bold">WebLLM Chat</h2>
+        <h2 className="text-xl font-bold">FM-MINI Chat</h2>
         <div className="flex items-center">
           {modelStatus === 'idle' && (
             <div className="flex items-center gap-3">
@@ -324,6 +369,21 @@ const ChatPage = () => {
               >
                 Load Model
               </button>
+              {/* <div className="flex items-center ml-2">
+                <input
+                  type="checkbox"
+                  id="autoload"
+                  checked={autoLoad}
+                  onChange={toggleAutoLoad}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                />
+                <label
+                  htmlFor="autoload"
+                  className="ml-2 text-xs text-white cursor-pointer"
+                >
+                  Auto-load
+                </label>
+              </div> */}
             </div>
           )}
           {modelStatus === 'loading' && (
@@ -344,9 +404,26 @@ const ChatPage = () => {
           )}
           {modelStatus === 'ready' && (
             <div className="flex flex-col items-end gap-1">
-              <span className="bg-success-light dark:bg-success-dark px-3 py-1 rounded text-xs font-medium">
-                Model Ready: {selectedModel}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="bg-success-light dark:bg-success-dark px-3 py-1 rounded text-xs font-medium">
+                  Model Ready: {selectedModel}
+                </span>
+                <button
+                  onClick={() => {
+                    unloadModel();
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        text: 'Model unloaded. You can now select a different model.',
+                        sender: 'bot',
+                      },
+                    ]);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-800 px-2 py-1 rounded text-xs text-white"
+                >
+                  Change Model
+                </button>
+              </div>
               <span className="text-xs text-white/80">Node ID: {nodeId}</span>
             </div>
           )}
@@ -399,7 +476,7 @@ const ChatPage = () => {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="p-4 border-t border-gray-200 dark:border-gray-700 flex">
+      <div className="p-4 border-t border-gray-600 dark:border-gray-700 flex">
         <input
           type="text"
           value={input}
@@ -416,6 +493,17 @@ const ChatPage = () => {
         >
           {isGenerating ? 'Generating...' : 'Send'}
         </button>
+      </div>
+      <div className="text-right p-2 px-4 text-xs text-gray-300">
+        powered by{' '}
+        <a
+          href="https://webllm.mlc.ai/"
+          className="text-primary-light hover:underline"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          WebLLM
+        </a>
       </div>
     </div>
   );

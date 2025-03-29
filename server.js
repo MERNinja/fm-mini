@@ -66,6 +66,18 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('message', message);
     });
 
+    // Handle node unregistration
+    socket.on('unregister_node', (data) => {
+        console.log('Node unregistered:', data.id);
+
+        if (nodes[data.id]) {
+            delete nodes[data.id];
+
+            // Notify all clients about the unregistration
+            io.emit('node_disconnected', data.id);
+        }
+    });
+
     // Handle disconnection
     socket.on('disconnect', () => {
         console.log('Client disconnected:', socket.id);

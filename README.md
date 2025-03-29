@@ -1,4 +1,4 @@
-# WebLLM Node Network
+# FM-MINI
 
 A web application that allows distributed WebLLM nodes to connect and communicate. It includes a chat interface with WebLLM integration and a node monitoring page, similar to [chat.webllm.ai](https://chat.webllm.ai/).
 
@@ -11,6 +11,8 @@ A web application that allows distributed WebLLM nodes to connect and communicat
 - **Real-time Communication**: Built with Socket.io for seamless node interaction
 - **Modern UI**: Built with TailwindCSS for a responsive and customizable interface
 - **Dark/Light Theme**: Supports both light and dark themes with system preference detection
+- **Model Switching**: Change between different models at any time without reloading the page
+- **Auto-Load Models**: Option to automatically load the last used model when revisiting the page
 
 ## Prerequisites
 
@@ -84,6 +86,11 @@ The application supports various WebLLM models including:
 ### Responsive Design
 - Mobile-friendly interface that adapts to different screen sizes
 - Optimized layout for both desktop and mobile browsing
+
+### Model Persistence
+- The last selected model is remembered between sessions
+- Optional auto-load feature to automatically load the last used model on page refresh
+- User preferences are stored in localStorage for persistence
 
 ## Development
 
