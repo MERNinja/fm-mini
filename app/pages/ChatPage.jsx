@@ -45,13 +45,36 @@ const ChatPage = () => {
     });
 
     newSocket.on('message', (message) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          text: message.text,
-          sender: 'bot',
-        },
-      ]);
+      // Only add messages sent from this node or explicitly directed to this node
+      if (message.from === nodeId || message.to === nodeId) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            text: message.text,
+            sender: 'bot',
+            nodeId: message.from,
+            socketId: message.socketId || 'unknown',
+          },
+        ]);
+      } else {
+        // For messages from other nodes, just log them but don't display in chat
+        console.log('Message from another node:', message);
+
+        // Add to node logs instead
+        setNodeLogs((prev) => [
+          ...prev,
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            nodeId: message.from || 'unknown',
+            socketId: message.socketId || 'unknown',
+            action: 'external_message',
+            prompt: `External message received: ${message.text.substring(
+              0,
+              50
+            )}${message.text.length > 50 ? '...' : ''}`,
+          },
+        ]);
+      }
     });
 
     newSocket.on('node_activity', (activity) => {
@@ -60,6 +83,7 @@ const ChatPage = () => {
         {
           timestamp: new Date().toLocaleTimeString(),
           nodeId: activity.nodeId,
+          socketId: activity.socketId || socket?.id || 'unknown',
           action: activity.action,
           prompt: activity.prompt,
         },
@@ -188,6 +212,8 @@ const ChatPage = () => {
         {
           text: `${selectedModel} model loaded successfully. This client is now a node in the network.`,
           sender: 'bot',
+          nodeId: 'system',
+          socketId: socket?.id || 'unknown',
         },
       ]);
     } catch (error) {
@@ -198,6 +224,8 @@ const ChatPage = () => {
         {
           text: `Error loading model: ${error.message}`,
           sender: 'bot',
+          nodeId: 'system',
+          socketId: socket?.id || 'unknown',
         },
       ]);
     }
@@ -218,7 +246,12 @@ const ChatPage = () => {
     if (!input.trim() || isGenerating) return;
 
     // Add user message to chat
-    const userMessage = { text: input, sender: 'user' };
+    const userMessage = {
+      text: input,
+      sender: 'user',
+      nodeId: nodeId,
+      socketId: socket?.id,
+    };
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
 
@@ -228,6 +261,7 @@ const ChatPage = () => {
       {
         timestamp: new Date().toLocaleTimeString(),
         nodeId,
+        socketId: socket?.id || 'unknown',
         action: 'prompt_sent',
         prompt: userMessage.text,
       },
@@ -259,6 +293,7 @@ const ChatPage = () => {
           {
             timestamp: new Date().toLocaleTimeString(),
             nodeId,
+            socketId: socket?.id || 'unknown',
             action: 'processing_prompt',
             prompt: userMessage.text,
           },
@@ -283,7 +318,12 @@ const ChatPage = () => {
             // Update the message with the accumulated text
             setMessages((prev) => {
               const updated = [...prev];
-              updated[newMessageIndex] = { text: fullResponse, sender: 'bot' };
+              updated[newMessageIndex] = {
+                text: fullResponse,
+                sender: 'bot',
+                nodeId: nodeId,
+                socketId: socket?.id,
+              };
               return updated;
             });
           }
@@ -295,6 +335,7 @@ const ChatPage = () => {
           {
             timestamp: new Date().toLocaleTimeString(),
             nodeId,
+            socketId: socket?.id || 'unknown',
             action: 'completed_prompt',
             prompt:
               userMessage.text.substring(0, 30) +
@@ -306,12 +347,14 @@ const ChatPage = () => {
         if (socket) {
           socket.emit('message', {
             from: nodeId,
+            socketId: socket.id,
             text: fullResponse,
           });
 
           // Broadcast node activity
           socket.emit('node_activity', {
             nodeId,
+            socketId: socket.id,
             action: 'response_generated',
             prompt:
               userMessage.text.substring(0, 30) +
@@ -325,6 +368,8 @@ const ChatPage = () => {
           {
             text: `Error generating response: ${error.message}`,
             sender: 'bot',
+            nodeId: nodeId,
+            socketId: socket?.id || 'unknown',
           },
         ]);
 
@@ -334,6 +379,7 @@ const ChatPage = () => {
           {
             timestamp: new Date().toLocaleTimeString(),
             nodeId,
+            socketId: socket?.id || 'unknown',
             action: 'error',
             prompt: `Error: ${error.message}`,
           },
@@ -348,6 +394,8 @@ const ChatPage = () => {
         {
           text: "Please load the WebLLM model first by clicking the 'Load Model' button.",
           sender: 'bot',
+          nodeId: 'system',
+          socketId: socket?.id || 'unknown',
         },
       ]);
 
@@ -357,6 +405,7 @@ const ChatPage = () => {
         {
           timestamp: new Date().toLocaleTimeString(),
           nodeId,
+          socketId: socket?.id || 'unknown',
           action: 'error',
           prompt: 'Model not loaded',
         },
@@ -375,6 +424,8 @@ const ChatPage = () => {
         {
           text: `Model changed to ${e.target.value}. Please click 'Load Model' to load the new model.`,
           sender: 'bot',
+          nodeId: 'system',
+          socketId: socket?.id || 'unknown',
         },
       ]);
     }
@@ -393,6 +444,8 @@ const ChatPage = () => {
           newValue ? 'enabled' : 'disabled'
         }.`,
         sender: 'bot',
+        nodeId: 'system',
+        socketId: socket?.id || 'unknown',
       },
     ]);
   };
@@ -416,6 +469,16 @@ const ChatPage = () => {
 
     setModelStatus('idle');
     setEngine(null);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        text: 'Model unloaded. You can now select a different model.',
+        sender: 'bot',
+        nodeId: 'system',
+        socketId: socket?.id || 'unknown',
+      },
+    ]);
   };
 
   // Cleanup engine on component unmount
@@ -503,6 +566,8 @@ const ChatPage = () => {
                       {
                         text: 'Model unloaded. You can now select a different model.',
                         sender: 'bot',
+                        nodeId: 'system',
+                        socketId: socket?.id || 'unknown',
                       },
                     ]);
                   }}
@@ -577,16 +642,27 @@ const ChatPage = () => {
                 className={`mb-4 p-3 rounded-lg max-w-[80%] ${
                   message.sender === 'user'
                     ? 'bg-primary-light dark:bg-primary-dark text-white self-end ml-auto'
+                    : message.nodeId === 'system'
+                    ? 'bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 self-start border-l-4 border-yellow-500'
                     : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 self-start'
                 } ${message.text ? '' : 'min-h-[40px] flex items-center'}`}
               >
-                {message.text || (
-                  <div className="typing-indicator">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </div>
-                )}
+                <div className="flex flex-col">
+                  {message.text || (
+                    <div className="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  )}
+                  {message.socketId && message.sender === 'bot' && (
+                    <div className="text-xs mt-1 text-gray-500 dark:text-gray-400">
+                      {message.nodeId === 'system'
+                        ? 'System message'
+                        : `From node: ${message.socketId.substring(0, 6)}...`}
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
             <div ref={messagesEndRef} />
@@ -621,6 +697,13 @@ const ChatPage = () => {
             <div className="text-gray-400 text-xs">
               <span className="text-green-500">FM-MINI Terminal</span> v1.0.0 -
               Connected to WebLLM network
+              <span className="ml-2 text-gray-600">|</span>
+              <span className="ml-2">
+                Active Socket:{' '}
+                <span className="text-yellow-500">
+                  {socket?.id || 'disconnected'}
+                </span>
+              </span>
             </div>
             <div className="flex justify-between items-center mt-1">
               <div>
@@ -662,12 +745,16 @@ const ChatPage = () => {
                           ? 'text-yellow-500'
                           : log.action === 'prompt_sent'
                           ? 'text-cyan-500'
+                          : log.action === 'external_message'
+                          ? 'text-pink-500'
                           : 'text-blue-500'
                       }`}
                     >
                       [{log.action}]
                     </span>{' '}
-                    <span className="text-purple-500">{log.nodeId}</span>{' '}
+                    <span className="text-purple-500">
+                      {log.socketId || 'unknown-socket'}
+                    </span>{' '}
                     <span className="text-gray-400">$</span>{' '}
                     <span className="text-gray-300 break-words whitespace-pre-wrap">
                       {log.prompt}

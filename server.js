@@ -62,15 +62,25 @@ io.on('connection', (socket) => {
     // Handle messages between nodes
     socket.on('message', (message) => {
         console.log('Message received:', message);
+        // Ensure socketId is included in the message
+        const messageWithSocket = {
+            ...message,
+            socketId: message.socketId || socket.id
+        };
         // Broadcast message to all other clients
-        socket.broadcast.emit('message', message);
+        socket.broadcast.emit('message', messageWithSocket);
     });
 
     // Handle node activity logs
     socket.on('node_activity', (activity) => {
         console.log('Node activity:', activity);
+        // Make sure the socketId is included in the broadcasted activity
+        const activityWithSocket = {
+            ...activity,
+            socketId: activity.socketId || socket.id
+        };
         // Broadcast activity to all clients
-        socket.broadcast.emit('node_activity', activity);
+        socket.broadcast.emit('node_activity', activityWithSocket);
     });
 
     // Handle node unregistration
