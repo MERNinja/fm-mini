@@ -126,6 +126,8 @@ http://localhost:8080
 - If you encounter issues with the Socket.io connection:
   - Check that the proxying configuration in `vite.config.js` is correct
   - Verify that both development servers are running
+ 
+  
 
 ## License
 
