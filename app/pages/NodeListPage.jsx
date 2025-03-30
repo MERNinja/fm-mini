@@ -141,16 +141,23 @@ const NodeListPage = () => {
   // Check if a node has tensor parallelism capabilities
   const hasTensorCapability = (nodeId) => {
     // First check the explicit tensor status
-    if (tensorStatus[nodeId]) {
+    if (tensorStatus[nodeId] === true) {
       return true;
     }
     
-    // Then fall back to checking tensor models
+    // Then check if the node has explicitly registered tensor capability
+    const node = nodes.find(n => n.id === nodeId);
+    if (node && node.tensorParallelEnabled === true) {
+      return true;
+    }
+    
+    // Fallback to checking tensor models
     for (const modelId in tensorModels) {
       if (tensorModels[modelId][nodeId]) {
         return true;
       }
     }
+    
     return false;
   };
   
@@ -169,9 +176,14 @@ const NodeListPage = () => {
         </h2>
         <div className="flex space-x-2">
           <button
-            onClick={() => socket?.emit('get_nodes')}
+            onClick={() => {
+              // Refresh both nodes and tensor status
+              socket?.emit('get_nodes');
+              socket?.emit('get_tensor_models');
+              socket?.emit('get_tensor_parallel_status');
+            }}
             className="px-4 py-2 bg-primary-light hover:bg-blue-600 dark:bg-primary-dark dark:hover:bg-blue-700 text-white rounded-md transition-colors"
-            aria-label="Refresh node list"
+            aria-label="Refresh node list and tensor status"
           >
             Refresh Nodes
           </button>
@@ -186,39 +198,12 @@ const NodeListPage = () => {
       </div>
 
       {loading ? (
-        <div className="py-8 text-center text-gray-600 dark:text-gray-400">
-          <div className="flex justify-center mb-4">
-            <svg
-              className="animate-spin h-8 w-8 text-primary-light dark:text-primary-dark"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              ></circle>
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              ></path>
-            </svg>
-          </div>
-          Loading nodes...
+        <div className="flex justify-center items-center py-10">
+          <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-primary-light dark:border-primary-dark"></div>
         </div>
       ) : nodes.length === 0 ? (
-        <div className="p-8 text-center border border-dashed border-gray-300 dark:border-gray-700 rounded-md bg-gray-50 dark:bg-gray-900">
-          <p className="text-lg font-medium mb-2 text-gray-700 dark:text-gray-300">
-            No nodes are currently connected.
-          </p>
-          <p className="text-gray-500 dark:text-gray-400">
-            Load a WebLLM model on the Chat page to create a new node.
-          </p>
+        <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-6 text-center">
+          <p className="text-gray-500 dark:text-gray-400">No nodes connected</p>
         </div>
       ) : (
         <div className="overflow-x-auto">
@@ -226,7 +211,7 @@ const NodeListPage = () => {
             <thead className="bg-gray-50 dark:bg-gray-900">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                  Socket ID
+                  Node ID
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                   IP Address
@@ -263,10 +248,19 @@ const NodeListPage = () => {
               {nodes.map((node) => (
                 <tr
                   key={node.id}
-                  className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                  className={`hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                    hasTensorCapability(node.id) 
+                      ? 'border-l-4 border-green-500 dark:border-green-700' 
+                      : ''
+                  }`}
                 >
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
-                    {node.socketId || 'N/A'}
+                    <div className="flex flex-col">
+                      <span>{node.id || 'N/A'}</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        Socket: {node.socketId || 'N/A'}
+                      </span>
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
                     {node.ip}
@@ -298,7 +292,9 @@ const NodeListPage = () => {
                         </div>
                       </div>
                     ) : (
-                      <span className="text-gray-500 dark:text-gray-400 text-xs">Not available</span>
+                      <span className="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200">
+                        Not available
+                      </span>
                     )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">

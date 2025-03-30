@@ -128,19 +128,40 @@ export class TensorOps {
 // Connection management for tensor parallelism
 export class TensorParallelManager {
   constructor() {
-    this.peers = new Map(); // Map of peer ID to RTCPeerConnection
-    this.dataChannels = new Map(); // Map of peer ID to RTCDataChannel
-    this.registeredModels = new Map(); // Map of model ID to model metadata
-    this.activeTasks = new Map(); // Map of task ID to task metadata
-    this.taskCallbacks = new Map(); // Map of task ID to result callback
-    this.operationCallbacks = new Map(); // Map of (peerId+operation) to callback
-    this.iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ];
-    this.selfId = 'node_' + Math.random().toString(36).substring(2, 9);
-    this.socket = null; // Socket.io instance
-    this.connectedPeers = new Set(); // Set of connected peer IDs - EXPLICITLY initialize as a Set
+    // WebRTC connections
+    this.peers = new Map();
+    this.dataChannels = new Map();
+    
+    // Store tensor model registrations
+    this.registeredModels = new Map();
+    
+    // Task and operation tracking
+    this.activeTasks = new Map();
+    this.taskCallbacks = new Map();
+    this.operationCallbacks = new Map();
+    
+    // Generate a self ID if not already set
+    // IMPORTANT: Always use 'node_' prefix for node IDs and ensure they're stable
+    if (!this.selfId) {
+      // Use a deterministic ID based on the current session or device
+      const deviceId = localStorage.getItem('deviceId');
+      if (deviceId) {
+        this.selfId = `node_${deviceId}`;
+      } else {
+        // Generate a new random ID and store it
+        const randomId = Math.random().toString(36).substring(2, 9);
+        localStorage.setItem('deviceId', randomId);
+        this.selfId = `node_${randomId}`;
+      }
+      
+      console.log(`Generated stable node ID: ${this.selfId}`);
+    }
+    
+    // Set of connected peers
+    this.connectedPeers = new Set();
+    
+    // Socket connection for signaling
+    this.socket = null;
   }
 
   /**
@@ -194,40 +215,30 @@ export class TensorParallelManager {
           });
         });
         
-        // Handle disconnection
-        this.socket.on('disconnect', (reason) => {
-          console.log(`Socket disconnected: ${reason}`);
-        });
-        
-        // Handle reconnection
-        this.socket.on('reconnect', () => {
-          console.log('Socket reconnected');
-        });
-        
-        // Handle node registration events (notifies when new nodes appear)
-        this.socket.on('node_registered', (node) => {
-          console.log('New node registered:', node);
-          
-          if (node.id !== this.selfId) {
-            console.log(`New peer node discovered: ${node.id}`);
-            
-            // IMPORTANT: Always add new peers directly
-            this.addDirectPeer(node.id);
-            
-            // Log the discovery
-            this.socket.emit('node_activity', {
-              nodeId: this.selfId,
-              socketId: this.socket?.id,
-              action: 'peer_discovered',
-              prompt: `New peer node discovered: ${node.id}`,
-              timestamp: new Date().toISOString()
-            });
+        // Handle tensor operations
+        this.socket.on('operation', (data) => {
+          if (data.to === this.selfId) {
+            this.handleOperation(data);
           }
         });
         
-        // Handle incoming operations
-        this.socket.on('operation', (data) => {
-          this.handleOperation(data);
+        // Handle operation results
+        this.socket.on('operation_result', (data) => {
+          if (data.to === this.selfId) {
+            this.handleOperationResult(data);
+          }
+        });
+        
+        // WARNING: Fix for phantom node IDs - NEVER generate temporary IDs 
+        // Intercept node_activity events and normalize IDs
+        this.socket.on('node_activity', (activity) => {
+          // If this is a task activity with targetNodeId not matching actual nodes, log warning
+          if (activity.targetNodeId && !activity.targetNodeId.startsWith('node_')) {
+            console.warn(`Detected potential phantom node ID: ${activity.targetNodeId}`);
+          }
+          
+          // Log all activity events for debugging
+          console.log(`[TensorManager] Activity event: ${activity.action} from ${activity.nodeId}`);
         });
       } catch (error) {
         console.error('Error initializing tensor parallel manager:', error);
@@ -657,6 +668,12 @@ export class TensorParallelManager {
         return;
       }
       
+      // IMPORTANT: Verify the target node ID exists in our known peers
+      if (!this.connectedPeers.has(to)) {
+        console.warn(`Attempting to send operation to unknown peer: ${to}`);
+        console.log(`Known peers: ${Array.from(this.connectedPeers).join(', ')}`);
+      }
+      
       console.log(`📤 Sending operation ${operation} to ${to} with task ID ${taskId}`);
       
       // Set up a listener for the result
@@ -779,56 +796,99 @@ export class TensorParallelManager {
   }
 
   /**
-   * Directly add a peer to connected peers regardless of WebRTC connection status
-   * @param {string} peerId The peer to add
-   */
-  addDirectPeer(peerId) {
-    // Don't try to connect to self
-    if (peerId === this.selfId) {
-      return false;
-    }
-    
-    // Don't add duplicates - check if we already have this peer
-    if (this.connectedPeers && this.connectedPeers.has(peerId)) {
-      console.log(`Peer ${peerId} already in connected peers list, skipping add operation`);
-      return false;
-    }
-    
-    console.log(`📡 Directly adding peer: ${peerId} to ensure connection`);
-    
-    // Ensure connectedPeers is initialized if it wasn't already
-    if (!this.connectedPeers) {
-      this.connectedPeers = new Set();
-    }
-    
-    // Add the peer to our set
-    this.connectedPeers.add(peerId);
-    
-    console.log(`Current connected peers after adding ${peerId}:`, Array.from(this.connectedPeers));
-    
-    // Log activity to socket for UI
-    if (this.socket) {
-      this.socket.emit('node_activity', {
-        nodeId: this.selfId,
-        socketId: this.socket?.id,
-        action: 'peer_connected',
-        prompt: `Force-added peer node: ${peerId}`,
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    return true;
-  }
-
-  /**
-   * Reset the connected peers list
+   * Reset connected peers
    */
   resetConnectedPeers() {
     this.connectedPeers = new Set();
-    console.log('Reset connected peers list');
-    return this;
+    console.log('Reset connected peers - now empty');
   }
 
+  /**
+   * Add a peer directly to connected peers
+   * @param {string} peerId The peer ID to add
+   */
+  addDirectPeer(peerId) {
+    // Skip adding self as a peer
+    if (peerId === this.selfId) {
+      return;
+    }
+    
+    // Only add valid node IDs
+    if (!peerId || typeof peerId !== 'string' || !peerId.startsWith('node_')) {
+      console.warn(`Skipping invalid peer ID: ${peerId}`);
+      return;
+    }
+    
+    // Add to connected peers
+    this.connectedPeers.add(peerId);
+    console.log(`Added peer ${peerId} to connected peers. Total peers: ${this.connectedPeers.size}`);
+    
+    // Store in localStorage for persistence
+    try {
+      const peerArray = Array.from(this.connectedPeers);
+      localStorage.setItem('connectedPeers', JSON.stringify(peerArray));
+    } catch (err) {
+      console.error('Error storing peers in localStorage:', err);
+    }
+  }
+
+  /**
+   * Force refresh connected peers directly from the server
+   * @returns {Promise<Array<string>>} The list of connected peer IDs
+   */
+  async forceRefreshPeers() {
+    return new Promise((resolve) => {
+      if (!this.socket) {
+        console.warn('No socket connection available');
+        resolve(Array.from(this.connectedPeers));
+        return;
+      }
+      
+      console.log('Forcing refresh of tensor parallel peers from server...');
+      
+      // First reset connected peers
+      this.resetConnectedPeers();
+      
+      // Request tensor parallel nodes specifically
+      this.socket.emit('get_tensor_parallel_nodes', (nodes) => {
+        console.log(`Server returned ${nodes?.length || 0} tensor parallel nodes`);
+        
+        if (!nodes || !Array.isArray(nodes)) {
+          resolve(Array.from(this.connectedPeers));
+          return;
+        }
+        
+        // Add each node except self
+        for (const node of nodes) {
+          if (node.id !== this.selfId) {
+            console.log(`Adding tensor parallel node: ${node.id}`);
+            this.addDirectPeer(node.id);
+          }
+        }
+        
+        // Also try regular node list as fallback
+        this.socket.emit('get_nodes', (allNodes) => {
+          if (allNodes && Array.isArray(allNodes)) {
+            // Filter for nodes with tensor parallel capability
+            const tensorNodes = allNodes.filter(n => 
+              n.id !== this.selfId && 
+              n.tensorParallelEnabled === true
+            );
+            
+            console.log(`Server returned ${tensorNodes.length} nodes with tensor parallel from regular list`);
+            
+            // Add these as well
+            for (const node of tensorNodes) {
+              this.addDirectPeer(node.id);
+            }
+          }
+          
+          resolve(Array.from(this.connectedPeers));
+        });
+      });
+    });
+  }
+  
   /**
    * Handle the peer discovery event triggered when we receive the node list
    * @param {Array} nodes List of nodes in the network
@@ -840,21 +900,60 @@ export class TensorParallelManager {
     }
     
     // Filter out self
-    const peerNodes = nodes.filter(n => n.id !== this.selfId);
+    // CRITICAL: Make sure we only process nodes with proper node_ prefixed IDs
+    const peerNodes = nodes.filter(n => {
+      if (n.id !== this.selfId && n.id.startsWith('node_')) {
+        return true;
+      }
+      else if (!n.id.startsWith('node_')) {
+        console.warn(`Ignoring node with invalid ID format: ${n.id}`);
+        return false;
+      }
+      return false;
+    });
+    
     console.log(`Discovered ${peerNodes.length} peer nodes: ${peerNodes.map(n => n.id).join(', ')}`);
     
-    // Reset the connected peers list first to avoid duplicates
+    // IMPORTANT: Reset connected peers to avoid accumulating phantom nodes
     this.resetConnectedPeers();
     
-    // IMPORTANT FIX: Add each peer exactly once
+    // Only add peers with tensor parallel capability enabled
     for (const peer of peerNodes) {
-      this.addDirectPeer(peer.id);
+      // Only add peers that have tensor parallel capability
+      if (peer.tensorParallelEnabled === true) {
+        this.addDirectPeer(peer.id);
+      } else {
+        console.log(`Peer ${peer.id} does not have tensor parallel capability enabled, not adding to connected peers`);
+      }
     }
     
-    // Attempt WebRTC connections for better performance, but don't rely on them
-    for (const peer of peerNodes) {
-      this.connectToPeer(peer.id).catch(error => {
-        console.warn(`WebRTC connection to ${peer.id} failed, falling back to signaling server: ${error.message}`);
+    // Get a list of only tensor parallel nodes from the server
+    if (this.socket) {
+      this.socket.emit('get_tensor_parallel_nodes', (parallelNodes) => {
+        console.log(`Received ${parallelNodes?.length || 0} tensor parallel enabled nodes from server`);
+        
+        // Instead of resetting again, just add any missing nodes
+        if (parallelNodes && Array.isArray(parallelNodes)) {
+          // IMPORTANT: Log every node we're adding to detect inconsistencies
+          for (const node of parallelNodes) {
+            if (node.id !== this.selfId && node.id.startsWith('node_')) {
+              console.log(`Adding tensor parallel node: ${node.id} to connected peers list`);
+              this.addDirectPeer(node.id);
+            }
+          }
+        }
+        
+        console.log(`Final connected peers for tensor parallelism: ${Array.from(this.connectedPeers).join(', ')}`);
+        
+        // DEBUG: Log the actual node IDs we'll use for operations
+        console.log('TENSOR NODE IDs FOR OPERATIONS:', Array.from(this.connectedPeers));
+        
+        // Store the peers in localStorage for persistence
+        try {
+          localStorage.setItem('connectedPeers', JSON.stringify(Array.from(this.connectedPeers)));
+        } catch (err) {
+          console.error('Error storing peers in localStorage:', err);
+        }
       });
     }
   }

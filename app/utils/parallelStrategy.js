@@ -187,8 +187,31 @@ export class TensorParallelStrategy extends ParallelismStrategy {
       throw new Error('Local node ID is required');
     }
 
-    // Include local node in the available nodes
-    const allNodes = [...nodeIds];
+    // Filter node IDs to only include tensor parallel capable nodes
+    // This is critical - only use nodes that have explicitly registered for tensor parallelism
+    const tensorParallelNodeIds = nodeIds.filter(nodeId => {
+      // We always include the local node
+      if (nodeId === localNodeId) return true;
+      
+      // Check if this node has tensor parallelism capability from the manager
+      const isCapable = this.options.getTensorParallelNodeIds ? 
+        this.options.getTensorParallelNodeIds().includes(nodeId) : 
+        true;
+      
+      if (!isCapable) {
+        console.log(`Node ${nodeId} does not have tensor parallelism capability, excluding from partitioning`);
+      }
+      
+      return isCapable;
+    });
+    
+    // Check if we have enough nodes after filtering
+    if (tensorParallelNodeIds.length < this.options.minNodesRequired) {
+      throw new Error(`At least ${this.options.minNodesRequired} tensor parallel capable nodes required, but only ${tensorParallelNodeIds.length} available`);
+    }
+
+    // Include local node in the available nodes if not already included
+    const allNodes = [...tensorParallelNodeIds];
     if (!allNodes.includes(localNodeId)) {
       allNodes.push(localNodeId);
     }

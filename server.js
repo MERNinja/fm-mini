@@ -25,6 +25,14 @@ const tensorModels = {};
 // Store tensor parallel availability status
 const tensorParallelStatus = {};
 
+// Create a function to get nodes with tensor parallel capability
+const getTensorParallelNodes = () => {
+    return Object.values(nodes).filter(node => {
+        // Check if the node has registered tensor parallel capability
+        return tensorParallelStatus[node.id]?.enabled === true;
+    });
+};
+
 io.on('connection', (socket) => {
     console.log('New client connected:', socket.id);
 
@@ -47,8 +55,24 @@ io.on('connection', (socket) => {
     });
 
     // Get all nodes
-    socket.on('get_nodes', () => {
-        socket.emit('node_list', Object.values(nodes));
+    socket.on('get_nodes', (callback) => {
+        if (typeof callback === 'function') {
+            // Return all nodes by default
+            callback(Object.values(nodes));
+        } else {
+            socket.emit('node_list', Object.values(nodes));
+        }
+    });
+
+    // Get only tensor parallel enabled nodes
+    socket.on('get_tensor_parallel_nodes', (callback) => {
+        const parallelNodes = getTensorParallelNodes();
+        
+        if (typeof callback === 'function') {
+            callback(parallelNodes);
+        } else {
+            socket.emit('tensor_parallel_nodes', parallelNodes);
+        }
     });
 
     // Handle node status updates
@@ -242,6 +266,11 @@ io.on('connection', (socket) => {
         
         tensorParallelStatus[nodeId].enabled = enabled;
         tensorParallelStatus[nodeId].modelId = modelId;
+        
+        // Update the node's status to include tensor parallel capability
+        if (nodes[nodeId]) {
+            nodes[nodeId].tensorParallelEnabled = enabled;
+        }
         
         // Notify all clients about tensor parallel capability
         io.emit('tensor_parallel_status', {

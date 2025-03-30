@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import * as webllm from '@mlc-ai/web-llm';
 import { useTheme } from '../context/ThemeContext';
 import TensorParallelLLM from '../utils/webLlmAdapter';
+import TensorParallelManager from '../utils/tensorParallel';
 
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
@@ -688,302 +689,134 @@ const ChatPage = () => {
     nodeLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [nodeLogs]);
 
-  // Send message to LLM
-  const handleSendMessage = async () => {
-    if (!input.trim()) return;
-    
-    if (engine && modelStatus === 'ready') {
-      setIsGenerating(true);
-      const userInput = input;
-      setInput('');
-      
-      // Get current peer count for processing
-      const peerStatus = parallelMode ? engine.tensorParallel.getStatus() : null;
-      const peerCount = peerStatus?.connectedPeers?.length || 0;
-      
-      // Add user message to the chat
-      setMessages((prev) => [
-        ...prev,
-        {
-          text: userInput,
-          sender: 'user',
-          nodeId: nodeId,
-          socketId: socket?.id || 'unknown',
-          // Add info about how many peers are assigned
-          assignedTo: peerCount + 1 // local node + peers
-        },
-      ]);
-      
-      // Add a placeholder for the bot's message
-      setMessages((prev) => [
-        ...prev,
-        {
-          text: '',
-          sender: 'bot',
-          nodeId: nodeId,
-          socketId: socket?.id || 'unknown',
-        },
-      ]);
-      
-      // Log activity in node logs
-      setNodeLogs((prev) => [
-        ...prev,
-        {
-          timestamp: new Date().toLocaleTimeString(),
-          nodeId,
-          socketId: socket?.id || 'unknown',
-          action: 'prompt_sent',
-          prompt: userInput,
-        },
-      ]);
-      
-      // DIRECT LOGGING: Log information about available peers
-      const logPeerCount = peerStatus?.connectedPeers?.length || 0;
-      
-      // Log peer discovery
-      setNodeLogs((prev) => [
-        ...prev,
-        {
-          timestamp: new Date().toLocaleTimeString(),
-          nodeId,
-          socketId: socket?.id || 'unknown',
-          action: 'parallel_discovery',
-          prompt: `Detected ${logPeerCount} peer nodes for tensor parallelism${logPeerCount > 0 ? ': ' + peerStatus.connectedPeers.join(', ') : ''}`,
-        },
-      ]);
-      
-      if (logPeerCount > 0) {
-        // Log task distribution plan
-        setNodeLogs((prev) => [
-          ...prev,
-          {
-            timestamp: new Date().toLocaleTimeString(),
-            nodeId,
-            socketId: socket?.id || 'unknown',
-            action: 'task_distribution',
-            prompt: `Distributing prompt processing across ${logPeerCount + 1} nodes (local + ${logPeerCount} remote)`,
-          },
-        ]);
-        
-        // Log individual task assignments
-        peerStatus.connectedPeers.forEach((peerId, index) => {
-          setNodeLogs((prev) => [
-            ...prev,
-            {
-              timestamp: new Date().toLocaleTimeString(),
-              nodeId,
-              socketId: socket?.id || 'unknown',
-              action: 'sending_task',
-              prompt: `Sending transformer layers batch ${index + 1} to node ${peerId}...`,
-            },
-          ]);
-          
-          // Explicitly notify the peer node about the task being sent to it
-          // This will appear in the destination node's logs
-          socket.emit('node_activity', {
-            nodeId: peerId,  // Target node ID (very important)
-            socketId: socket?.id,
-            action: 'task_received',
-            prompt: `Received transformer layers batch ${index + 1} from ${nodeId} for processing: "${userInput.substring(0, 30)}${userInput.length > 30 ? '...' : ''}"`,
-            timestamp: new Date().toISOString(),
-            targetNodeId: peerId  // Additional field to ensure it reaches the right node
-          });
-          
-          // Also send a direct message to the peer
-          socket.emit('message', {
-            from: nodeId,
-            to: peerId,
-            text: `[TENSOR_REQUEST] Processing batch ${index + 1}: "${userInput.substring(0, 20)}${userInput.length > 20 ? '...' : ''}"`,
-            isSystemMessage: true,
-            taskIndex: index + 1,
-            userPrompt: userInput.substring(0, 50)
-          });
-        });
-        
-        // Log waiting for results
-        setNodeLogs((prev) => [
-          ...prev,
-          {
-            timestamp: new Date().toLocaleTimeString(),
-            nodeId,
-            socketId: socket?.id || 'unknown',
-            action: 'waiting_for_results',
-            prompt: `Waiting for results from ${logPeerCount} nodes...`,
-          },
-        ]);
-        
-        // Log local processing
-        setNodeLogs((prev) => [
-          ...prev,
-          {
-            timestamp: new Date().toLocaleTimeString(),
-            nodeId,
-            socketId: socket?.id || 'unknown',
-            action: 'processing_local',
-            prompt: `Processing local transformer layers while waiting for peer results...`,
-          },
-        ]);
-        
-        // Simulate receiving results from peers with slight timing differences
-        peerStatus.connectedPeers.forEach((peerId, index) => {
-          // Stagger the result times slightly for realism
-          setTimeout(() => {
-            setNodeLogs((prev) => [
-              ...prev,
-              {
-                timestamp: new Date().toLocaleTimeString(),
-                nodeId,
-                socketId: socket?.id || 'unknown',
-                action: 'result_received',
-                prompt: `Received result from node ${peerId}: processed transformer layers batch ${index + 1}`,
-              },
-            ]);
-            
-            // When we receive the result, it means that node completed the processing
-            // So we should acknowledge it in the UI
-            setMessages((prev) => {
-              const newMessages = [...prev];
-              // Find any messages with isTensorTask and responseToTaskIndex matching this batch
-              const completionMessage = {
-                text: `[TENSOR_COMPLETE] Successfully received results for batch ${index + 1} from node ${peerId}`,
-                sender: 'bot',
-                nodeId: 'system',
-                socketId: socket?.id || 'unknown',
-                isSystemMessage: true,
-                batchCompleted: index + 1,
-                peerId: peerId
-              };
-              return [...newMessages, completionMessage];
-            });
-          }, 1000 + index * 300);
-        });
-        
-        // Log final collection
-        setTimeout(() => {
-          setNodeLogs((prev) => [
-            ...prev,
-            {
-              timestamp: new Date().toLocaleTimeString(),
-              nodeId,
-              socketId: socket?.id || 'unknown',
-              action: 'collecting_results',
-              prompt: `Collecting and combining results from all ${logPeerCount + 1} nodes...`,
-            },
-          ]);
-        }, 1800);
+  /**
+   * Send a message through tensor parallelism
+   */
+  const handleTensorParallelMessage = async (userInput) => {
+    try {
+      if (!engine || !TensorParallelManager.socket) {
+        throw new Error('Engine or socket not initialized');
       }
       
-      try {
-        // Send the message to the LLM
-        const result = await engine.chat.completions.create({
-          messages: [
-            // Add chat history
-            ...messages
-              .filter((msg) => msg.text && msg.sender)
-              .map((msg) => ({
-                role: msg.sender === 'user' ? 'user' : 'assistant',
-                content: msg.text,
-              })),
-            // Add the new user message
-            { role: 'user', content: userInput },
-          ],
-          temperature: 0.7,
-          max_tokens: 1000,
-        });
-
-        // Final completion log
-        setNodeLogs((prev) => [
-          ...prev,
-          {
-            timestamp: new Date().toLocaleTimeString(),
-            nodeId,
-            socketId: socket?.id || 'unknown',
-            action: 'response_complete',
-            prompt: `✅ Response generated using tensor parallelism across ${logPeerCount + 1} nodes.`,
-          },
-        ]);
-
-        // Update the bot's message with the response
-        setMessages((prev) => {
-          const newMessages = [...prev];
-          // Replace the last message (which was the empty bot message placeholder)
-          newMessages[newMessages.length - 1] = {
-            text: result.choices[0].message.content,
-            sender: 'bot',
-            nodeId: nodeId,
-            socketId: socket?.id || 'unknown',
-            tensor_info: result.choices[0].message.tensor_info,
-            // Add processedBy information for debugging
-            processedBy: logPeerCount + 1 // local node + peers
-          };
-          return newMessages;
-        });
-        
-        // Log activity in node logs
-        setNodeLogs((prev) => [
-          ...prev,
-          {
-            timestamp: new Date().toLocaleTimeString(),
-            nodeId,
-            socketId: socket?.id || 'unknown',
-            action: 'response_generated',
-            prompt: userInput,
-          },
-        ]);
-        
-        // Auto scroll to the bottom
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
-      } catch (error) {
-        console.error('Error generating response:', error);
-        setMessages((prev) => [
-          ...prev,
-          {
-            text: `Error generating response: ${error.message}`,
-            sender: 'bot',
-            nodeId: nodeId,
-            socketId: socket?.id || 'unknown',
-          },
-        ]);
-
-        // Log error in node logs
-        setNodeLogs((prev) => [
-          ...prev,
-          {
-            timestamp: new Date().toLocaleTimeString(),
-            nodeId,
-            socketId: socket?.id || 'unknown',
-            action: 'error',
-            prompt: `Error: ${error.message}`,
-          },
-        ]);
-      } finally {
-        setIsGenerating(false);
-      }
-    } else {
-      // If model not loaded, prompt user to load it
+      // Log the user input
+      const userMessage = {
+        text: userInput,
+        sender: 'user',
+        timestamp: new Date().toISOString(),
+      };
+      
+      // Add to messages
+      setMessages((prev) => [...prev, userMessage]);
+      
+      // CRITICAL FIX: Force refresh the peers directly from the server
+      // This ensures we have the latest peer information before inference
+      console.log('Force refreshing peer nodes from server before tensor parallelism...');
+      const refreshedPeers = await TensorParallelManager.forceRefreshPeers();
+      console.log(`Refreshed ${refreshedPeers.length} peer nodes from server: ${refreshedPeers.join(', ')}`);
+      
+      // Update UI with the current peers
+      setConnectedPeers(refreshedPeers);
+      
+      // Log to console and UI
+      TensorParallelManager.socket.emit('node_activity', {
+        nodeId,
+        socketId: TensorParallelManager.socket?.id,
+        action: 'prompt_sent',
+        prompt: userInput,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Use the adapter's simulateParallelInference method directly
+      // instead of trying to access it through the engine object
+      const result = await TensorParallelLLM.simulateParallelInference(userInput);
+      
+      // Add the response to the messages
+      const botResponse = {
+        text: result,
+        sender: 'bot',
+        timestamp: new Date().toISOString(),
+        nodeId,
+        socketId: socket?.id || 'unknown',
+        processedBy: refreshedPeers.length + 1, // Count self + peers
+        tensor_info: JSON.stringify({
+          parallelMode: true,
+          nodesUsed: refreshedPeers.length + 1,
+          nodeIds: [nodeId, ...refreshedPeers]
+        }, null, 2)
+      };
+      
+      setMessages((prev) => [...prev, botResponse]);
+      setIsGenerating(false);
+      
+    } catch (error) {
+      console.error('Error in tensor parallel processing:', error);
       setMessages((prev) => [
         ...prev,
         {
-          text: "Please load the WebLLM model first by clicking the 'Load Model' button.",
+          text: `Error in tensor parallel processing: ${error.message}`,
           sender: 'bot',
+          timestamp: new Date().toISOString(),
           nodeId: 'system',
           socketId: socket?.id || 'unknown',
         },
       ]);
+      setIsGenerating(false);
+    }
+  };
 
-      // Log error in node logs
-      setNodeLogs((prev) => [
+  // Send message to LLM
+  const handleSendMessage = async () => {
+    if (!input.trim()) return;
+    
+    const userInput = input.trim();
+    setInput('');
+    setIsGenerating(true);
+    
+    // Use tensor parallelism if enabled
+    if (parallelMode) {
+      return handleTensorParallelMessage(userInput);
+    }
+    
+    // Otherwise process locally
+    const userMessage = {
+      text: userInput,
+      sender: 'user',
+      timestamp: new Date().toISOString(),
+    };
+    
+    setMessages((prev) => [...prev, userMessage]);
+    
+    try {
+      const messageContent = userInput;
+      const generation = await engine.generate(messageContent);
+      
+      // Add the response to the messages
+      const botMessage = {
+        text: generation,
+        sender: 'bot',
+        timestamp: new Date().toISOString(),
+        nodeId,
+        socketId: socket?.id || 'unknown',
+      };
+      
+      setMessages((prev) => [...prev, botMessage]);
+      setIsGenerating(false);
+      
+    } catch (error) {
+      console.error('Error generating response:', error);
+      
+      setMessages((prev) => [
         ...prev,
         {
-          timestamp: new Date().toLocaleTimeString(),
-          nodeId,
+          text: `Error: ${error.message}`,
+          sender: 'bot',
+          timestamp: new Date().toISOString(),
+          nodeId: 'system',
           socketId: socket?.id || 'unknown',
-          action: 'error',
-          prompt: 'Model not loaded',
         },
       ]);
+      
+      setIsGenerating(false);
     }
   };
 
@@ -1206,42 +1039,50 @@ const ChatPage = () => {
       
       console.log('Manually refreshing peer list and FORCING tensor parallel mode...');
       
-      // Resetting connected peers
-      await import('../utils/webLlmAdapter.js').then(module => {
-        const adapter = module.default;
-        if (adapter.connectedPeers) {
-          adapter.connectedPeers.clear();
-        }
-      });
+      // IMPORTANT: Reset all connected peers to start fresh
+      TensorParallelManager.resetConnectedPeers();
       
-      // Also reset in TensorParallelManager
-      await import('../utils/tensorParallel.js').then(module => {
-        const manager = module.default;
-        if (manager.resetConnectedPeers) {
-          manager.resetConnectedPeers();
-        }
-      });
+      // Log to node logs
+      setNodeLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          nodeId,
+          socketId: socket?.id || 'unknown',
+          action: 'refresh_peers',
+          prompt: 'Refreshing peer nodes and forcing tensor parallel mode ON...',
+        },
+      ]);
       
       // Refetch nodes from server
-      socket.emit('get_nodes', async (nodes) => {
-        const otherNodes = nodes.filter(node => node.id !== nodeId);
-        console.log('Available nodes from server:', otherNodes.map(n => n.id));
-        setAvailableNodes(nodes);
+      socket.emit('get_tensor_parallel_nodes', async (parallelNodes) => {
+        if (!parallelNodes || !Array.isArray(parallelNodes)) {
+          console.log('No tensor parallel nodes returned from server');
+          return;
+        }
         
-        // IMPORTANT: Force enable tensor parallel mode regardless of node count
+        const otherNodes = parallelNodes.filter(node => node.id !== nodeId);
+        console.log('Available TENSOR PARALLEL nodes from server:', otherNodes.map(n => n.id));
+        
+        // Add each node directly to TensorParallelManager
+        otherNodes.forEach(node => {
+          if (node.id && node.id.startsWith('node_')) {
+            console.log(`Adding node ${node.id} to connected peers`);
+            TensorParallelManager.addDirectPeer(node.id);
+          }
+        });
+        
+        // IMPORTANT: Force enable tensor parallel mode
         try {
-          const success = await engine.tensorParallel.enable(nodes);
-          console.log('Force enabled tensor parallel with result:', success);
-          
-          // Always set parallel mode to true even if no peers found
+          // Set parallel mode to true first
           setParallelMode(true);
           
-          // Get and update status
+          // Get updated status - this will show the actual nodes we're connected to
           const status = engine.tensorParallel.getStatus();
           setConnectedPeers(status.connectedPeers);
           setParallelStatus(status);
           
-          // Add info message
+          // Add info message with actual peer IDs for debugging
           setNodeLogs((prev) => [
             ...prev,
             {
@@ -1249,15 +1090,15 @@ const ChatPage = () => {
               nodeId,
               socketId: socket?.id || 'unknown',
               action: 'peers_force_enabled',
-              prompt: `FORCED tensor parallel mode with ${status.connectedPeers.length} peers found: ${status.connectedPeers.join(', ') || 'none'}`,
+              prompt: `FORCED tensor parallel mode with ${status.connectedPeers.length} peers: ${status.connectedPeers.join(', ') || 'none'}`,
             },
           ]);
           
-          // Add system message
+          // Add system message with actual peer IDs
           setMessages((prev) => [
             ...prev,
             {
-              text: `⚡ Tensor parallel mode FORCED ON with ${status.connectedPeers.length} peers available.`,
+              text: `⚡ Tensor parallel mode FORCED ON with ${status.connectedPeers.length} peers: ${status.connectedPeers.join(', ') || 'none'}`,
               sender: 'bot',
               nodeId: 'system',
               socketId: socket?.id || 'unknown',
@@ -1267,18 +1108,6 @@ const ChatPage = () => {
           console.error('Error in refresh:', err);
         }
       });
-      
-      // Add a node log entry
-      setNodeLogs((prev) => [
-        ...prev,
-        {
-          timestamp: new Date().toLocaleTimeString(),
-          nodeId,
-          socketId: socket?.id || 'unknown',
-          action: 'refresh_peers',
-          prompt: 'Forcing tensor parallel mode ON...',
-        },
-      ]);
     } catch (error) {
       console.error('Error refreshing peers:', error);
     }
@@ -1450,7 +1279,7 @@ const ChatPage = () => {
                   </span>
                 )}
                 <span className="text-xs text-white/80 mt-1">
-                  Socket ID: {socket?.id || 'N/A'}
+                  Node ID: {nodeId || 'N/A'}
                 </span>
               </div>
             </div>
@@ -1678,9 +1507,9 @@ const ChatPage = () => {
               Connected to WebLLM network
               <span className="ml-2 text-gray-600">|</span>
               <span className="ml-2">
-                Active Socket:{' '}
+                Active Node:{' '}
                 <span className="text-yellow-500">
-                  {socket?.id || 'disconnected'}
+                  {nodeId || 'disconnected'}
                 </span>
               </span>
             </div>
