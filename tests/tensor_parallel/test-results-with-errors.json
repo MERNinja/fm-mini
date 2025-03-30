@@ -1,0 +1,27 @@
+{
+  "startTime": "2025-03-29T15:07:47.053Z",
+  "prompt": "Write me a short poem about distributed computing.",
+  "modelId": "mock-test-model",
+  "nodes": [
+    {
+      "id": "node_1",
+      "status": "ready"
+    },
+    {
+      "id": "node_2",
+      "status": "ready"
+    },
+    {
+      "id": "node_3",
+      "status": "ready"
+    }
+  ],
+  "responses": [],
+  "parallelEnabled": false,
+  "errors": [
+    {
+      "phase": "test",
+      "error": "Model not loaded yet"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "model_info": {
+    "model_id": "mock-test-model",
+    "model_name": "Mock Test Model",
+    "max_sequence_length": 2048,
+    "vocab_size": 32000,
+    "hidden_size": 768,
+    "num_attention_heads": 12,
+    "num_hidden_layers": 12
+  },
+  "tokenizer_files": [
+    "tokenizer.json"
+  ],
+  "context_window_size": 2048,
+  "sliding_window_size": 0,
+  "prepended_space_in_first_token": false,
+  "add_bos_token": true,
+  "add_eos_token": true,
+  "chat_template": "{{ bos_token }}{% for message in messages %}{% if message['role'] == 'user' %}{{ '[USER]: ' + message['content'] }}{% elif message['role'] == 'assistant' %}{{ '[ASSISTANT]: ' + message['content'] }}{% elif message['role'] == 'system' %}{{ '[SYSTEM]: ' + message['content'] }}{% endif %}{% endfor %}",
+  "generate_chat_response_prompt": "{{ '[ASSISTANT]: ' }}"
+}
